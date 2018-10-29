@@ -288,7 +288,6 @@ void renderMeshes(
         unsigned char* frameBuffer,
         int* depthBuffer
 ) {
-
     for(unsigned int item = 0; item < totalItemsToRender; item++) {
         workItemGPU objectToRender = workQueue[item];
         for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
@@ -296,7 +295,6 @@ void renderMeshes(
                 float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
                 float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
                 float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
-
                 runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
                 runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
                 runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
@@ -352,6 +350,17 @@ void fillWorkQueue(
 
 }
 
+// Kernel for initializing the frame buffer
+__global__ void gpuInitFrameBuffer(unsigned char* frameBuffer) {
+	frameBuffer[((blockIdx.x*threadIdx.x)*4) + 0] = 0;
+	frameBuffer[((blockIdx.x*threadIdx.x)*4) + 1] = 0;
+	frameBuffer[((blockIdx.x*threadIdx.x)*4) + 2] = 0;
+	frameBuffer[((blockIdx.x*threadIdx.x)*4) + 3] = 255;
+}
+// Kernel for initializing the depth buffer
+__global__ void gpuInitDepthBuffer(int* depthBuffer) {
+		depthBuffer[blockIdx.x * threadIdx.x] = 16777216;
+}
 // This function kicks off the rasterisation process.
 std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int width, unsigned int height, unsigned int depthLimit) {
     std::cout << "Rendering an image on the GPU.." << std::endl;
@@ -367,14 +376,62 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 			checkCudaErrors(cudaGetDeviceProperties(prop, i));
 			std::cout << "Device name is: " << prop->name << std::endl;
 		}
+
 		// Task 2.C
 		checkCudaErrors(cudaSetDevice(0));
 
     std::vector<GPUMesh> meshes = loadWavefrontGPU(inputFile, false);
 
+		std::vector<GPUMesh> cpu_meshes;
+		for(unsigned int i = 0; i < meshes.size(); ++i) {
+			cpu_meshes.push_back(meshes.at(i));
+		}
+
+		GPUMesh* gpu_meshes;
+		checkCudaErrors(cudaMalloc(&gpu_meshes, meshes.size()));
+		// checkCudaErrors(cudaMemcpy(gpu_meshes, &cpu_meshes, meshes.size(), cudaMemcpyHostToDevice));
+		for(unsigned int i = 0; i < meshes.size();++i) {
+			/*
+				float* vert[4];
+				float* norm[3];
+			  *vert[0] = meshes[i].vertices->x;
+				*vert[1] = meshes[i].vertices->y;
+				*vert[2] = meshes[i].vertices->z;
+				*vert[3] = meshes[i].vertices->w;
+				*norm[0] = meshes[i].normals->x;
+				*norm[1] = meshes[i].normals->y;
+				*norm[2] = meshes[i].normals->z;
+
+				checkCudaErrors(cudaMalloc(&vert, sizeof(float)*4));
+				checkCudaErrors(cudaMalloc(&norm, sizeof(float)*3));
+			*/
+			float* vert[4];
+			float* norm[3];
+
+			checkCudaErrors(cudaMalloc(vert, sizeof(float)*4));
+			checkCudaErrors(cudaMalloc(norm, sizeof(float)*3));
+		}
+
     // We first need to allocate some buffers.
     // The framebuffer contains the image being rendered.
     unsigned char* frameBuffer = new unsigned char[width * height * 4];
+
+		// Task 4.a
+		unsigned char* gpu_fb;
+		checkCudaErrors(cudaMalloc(&gpu_fb, sizeof(unsigned char)*width*height*4));
+		int* gpu_dp;
+		checkCudaErrors(cudaMalloc(&gpu_dp, sizeof(int)*width*height));
+
+		// Task 4.b
+		gpuInitFrameBuffer<<<2025, 1024>>>(gpu_fb);
+		gpuInitDepthBuffer<<<2025, 1024>>>(gpu_dp);
+
+		checkCudaErrors(cudaDeviceSynchronize());
+
+		std::cout << "Number of elements to be initialized for the frame buffer = " << 4*width*height << std::endl;
+		std::cout << "Number of elements to be initialized for the depth buffer = " << width*height << std::endl;
+
+
     // The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
     for (unsigned int i = 0; i < (4 * width * height); i+=4) {
 		frameBuffer[i + 0] = 0;
@@ -426,6 +483,10 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     unsigned long counter = 0;
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
 
+		workItemGPU* gpu_workQueue;
+		checkCudaErrors(cudaMalloc(&gpu_workQueue, totalItemsToRender*sizeof(workItemGPU)));
+		checkCudaErrors(cudaMemcpy(gpu_workQueue, workQueue, sizeof(workItemGPU)*totalItemsToRender, cudaMemcpyHostToDevice));
+
 	renderMeshes(
 			totalItemsToRender, workQueue,
 			meshes.data(), meshes.size(),
@@ -440,6 +501,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		delete count;
 		// Deleting for task 2.B
 		delete prop;
+		// Deleting for task 4.a
+		//delete[] gpu_fb;
 
     return outputFramebuffer;
 }
