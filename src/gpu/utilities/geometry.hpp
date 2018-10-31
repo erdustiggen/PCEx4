@@ -40,17 +40,3 @@ public:
 
 	__host__ GPUMesh clone();
 };
-// RONQLD
-class GPUMesh_cpu {
-public:
-	float4* vertices;
-	float3* normals;
-
-	unsigned long* vertexCount = 0;
-
-	float3* objectDiffuseColour;
-
-	bool* hasNormals;
-
-	__host__ GPUMesh_cpu clone();
-};

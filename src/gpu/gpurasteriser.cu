@@ -433,7 +433,7 @@ __device__ void gpuRasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 		}
 	}
 }
-
+/*
 __global__ void gpuRenderMeshes(
         unsigned long totalItemsToRender,
         workItemGPU* workQueue,
@@ -460,7 +460,30 @@ __global__ void gpuRenderMeshes(
         }
     }
 }
-
+*/
+__global__ void gpuRenderMeshes(
+        unsigned long totalItemsToRender,
+        workItemGPU* workQueue,
+        GPUMesh* meshes,
+        unsigned int meshCount,
+        unsigned int width,
+        unsigned int height,
+        unsigned char* frameBuffer,
+        int* depthBuffer
+) {
+		workItemGPU objectToRender = workQueue[(blockIdx.x* 1024) + threadIdx.x];
+    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
+    		for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
+        		float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
+            float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
+            float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
+            gpuRunVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
+            gpuRunVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
+            gpuRunVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
+            gpuRasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
+      	}
+    }
+}
 
 void renderMeshes(
         unsigned long totalItemsToRender,
@@ -535,14 +558,13 @@ void fillWorkQueue(
 
 }
 
+
 // Kernel for initializing the frame buffer
 __global__ void gpuInitFrameBuffer(unsigned char* frameBuffer) {
 	frameBuffer[((blockIdx.x*1024 + threadIdx.x)*4) + 0] = 0;
 	frameBuffer[((blockIdx.x*1024 + threadIdx.x)*4) + 1] = 0;
 	frameBuffer[((blockIdx.x*1024 + threadIdx.x)*4) + 2] = 0;
 	frameBuffer[((blockIdx.x*1024 + threadIdx.x)*4) + 3] = 255;
-
-
 }
 // Kernel for initializing the depth buffer
 __global__ void gpuInitDepthBuffer(int* depthBuffer) {
@@ -553,6 +575,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     std::cout << "Rendering an image on the GPU.." << std::endl;
     std::cout << "Loading '" << inputFile << "' file... " << std::endl;
 
+
+		int* maxThreadSize;
 		// Task 2.A
 		int* count = new int;
 		checkCudaErrors(cudaGetDeviceCount(count));
@@ -562,6 +586,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		for (int i = 0; i < *count; ++i) {
 			checkCudaErrors(cudaGetDeviceProperties(prop, i));
 			std::cout << "Device name is: " << prop->name << std::endl;
+			maxThreadSize = prop->maxThreadsDim;
 		}
 
 		// Task 2.C
@@ -569,41 +594,33 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     std::vector<GPUMesh> meshes = loadWavefrontGPU(inputFile, false);
 
-		std::vector<GPUMesh_cpu> cpu_meshes;
-
+		std::vector<GPUMesh> cpu_meshes;
 		GPUMesh* gpu_meshes;
-		checkCudaErrors(cudaMalloc(&gpu_meshes, meshes.size()));
+
+		checkCudaErrors(cudaMalloc(&gpu_meshes, meshes.size()*sizeof(GPUMesh)));
 		// checkCudaErrors(cudaMemcpy(gpu_meshes, &cpu_meshes, meshes.size(), cudaMemcpyHostToDevice));
 		for(unsigned int i = 0; i < meshes.size();++i) {
 				float4* vert;
 				float3* norm;
-				unsigned long* vertCount;
-				float3* objDiffColor;
-				bool* hasNorm;
 
-				checkCudaErrors(cudaMalloc(&vert, sizeof(float4)));
-				checkCudaErrors(cudaMalloc(&norm, sizeof(float3)));
-				checkCudaErrors(cudaMalloc(&vertCount, sizeof(unsigned long)));
-				checkCudaErrors(cudaMalloc(&objDiffColor, sizeof(float3)));
-				checkCudaErrors(cudaMalloc(&hasNorm, sizeof(bool)));
+				checkCudaErrors(cudaMalloc(&vert, sizeof(float4)*meshes.at(i).vertexCount));
+				checkCudaErrors(cudaMalloc(&norm, sizeof(float3)*meshes.at(i).vertexCount));
 
-
-				GPUMesh_cpu mesh;
+				GPUMesh mesh;
 				mesh.vertices = vert;
 				mesh.normals = norm;
-				mesh.vertexCount = vertCount;
-				mesh.objectDiffuseColour = objDiffColor;
-				mesh.hasNormals = hasNorm;
+				mesh.vertexCount = meshes.at(i).vertexCount;
+				mesh.hasNormals = meshes.at(i).hasNormals;
+				mesh.objectDiffuseColour = meshes.at(i).objectDiffuseColour;
+				std::cout << meshes.at(i).vertexCount << std::endl;
+
 				cpu_meshes.push_back(mesh);
 
-				checkCudaErrors(cudaMemcpy(vert, meshes[i].vertices, sizeof(float4), cudaMemcpyHostToDevice));
-				checkCudaErrors(cudaMemcpy(norm, meshes[i].normals, sizeof(float3), cudaMemcpyHostToDevice));
-				checkCudaErrors(cudaMemcpy(vertCount, &meshes[i].vertexCount, sizeof(unsigned long), cudaMemcpyHostToDevice));
-				checkCudaErrors(cudaMemcpy(objDiffColor, &meshes[i].objectDiffuseColour, sizeof(float3), cudaMemcpyHostToDevice));
-				checkCudaErrors(cudaMemcpy(hasNorm, &meshes[i].hasNormals, sizeof(bool), cudaMemcpyHostToDevice));
+				checkCudaErrors(cudaMemcpy(vert, meshes[i].vertices, sizeof(float4)*meshes.at(i).vertexCount, cudaMemcpyHostToDevice));
+				checkCudaErrors(cudaMemcpy(norm, meshes[i].normals, sizeof(float3)*meshes.at(i).vertexCount, cudaMemcpyHostToDevice));
 		}
 
-		checkCudaErrors(cudaMemcpy(gpu_meshes, &cpu_meshes, cpu_meshes.size(), cudaMemcpyHostToDevice));
+		checkCudaErrors(cudaMemcpy(gpu_meshes, cpu_meshes.data(), cpu_meshes.size()*sizeof(GPUMesh), cudaMemcpyHostToDevice));
 
     // We first need to allocate some buffers.
     // The framebuffer contains the image being rendered.
@@ -616,8 +633,9 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		checkCudaErrors(cudaMalloc(&gpu_dp, sizeof(int)*width*height));
 
 		// Task 4.b
-		gpuInitFrameBuffer<<<2025, 1024>>>(gpu_fb);
-		gpuInitDepthBuffer<<<2025, 1024>>>(gpu_dp);
+		unsigned long initBlockSize = (width*height) / *maxThreadSize;
+		gpuInitFrameBuffer<<<initBlockSize, *maxThreadSize>>>(gpu_fb);
+		gpuInitDepthBuffer<<<initBlockSize, *maxThreadSize>>>(gpu_dp);
 
 		checkCudaErrors(cudaDeviceSynchronize());
 
@@ -685,7 +703,25 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 			meshes.data(), meshes.size(),
 			width, height, frameBuffer, depthBuffer);
 */
-	gpuRenderMeshes<<<1,1>>>(totalItemsToRender, gpu_workQueue, gpu_meshes, cpu_meshes.size(), width, height, gpu_fb, gpu_dp);
+
+
+	unsigned long renderBlockSize;
+	unsigned long renderThreadSize;
+
+	if(totalItemsToRender > *maxThreadSize) {
+		renderThreadSize = *maxThreadSize;
+		renderBlockSize = totalItemsToRender / renderThreadSize;
+		std::cout << "render thread size = " << renderThreadSize << std::endl;
+		std::cout << "render block size = " << renderBlockSize << std::endl;
+	}
+	else {
+		renderThreadSize = *maxThreadSize;
+		renderBlockSize = 1;
+		std::cout << "render thread size = " << renderThreadSize << std::endl;
+		std::cout << "render block size = " << renderBlockSize << std::endl;
+	}
+
+	gpuRenderMeshes<<<renderBlockSize,renderThreadSize>>>(totalItemsToRender, gpu_workQueue, gpu_meshes, cpu_meshes.size(), width, height, gpu_fb, gpu_dp);
 
 		checkCudaErrors(cudaDeviceSynchronize());
 
